@@ -470,31 +470,94 @@ def parse_xdxr_info(body: bytes) -> list[dict]:
 
 
 def parse_finance_info(body: bytes) -> dict:
-    """解析财务数据"""
-    result = {}
-    fields = [
-        "total_shares",
-        "float_shares",
-        "management_shares",
-        "total_assets",
-        "float_assets",
-        "fixed_assets",
-        "reserved",
-        "reserved_per_share",
-        "eps",
-        "bvps",
-        "roe",
-        "pe_ratio",
-        "net_profit",
-        "operating_income",
-        "debt_ratio",
-    ]
-    pos = 0
-    for i, name in enumerate(fields):
-        (val,) = struct.unpack_from("<I", body, pos)
-        result[name] = val
-        pos += 4
-    return result
+    """解析财务数据
+
+    响应头 9 字节: count(2B) + market(1B) + code(6B)
+    响应体 136 字节: <fHHII + 30×f，格式与 pytdx 完全一致
+    股本字段单位: 万股 (×10000 得实际股数)
+    财务字段单位: 万元 (×10000 得实际元数)，gudongrenshu 除外
+    """
+    if len(body) < 9 + 136:
+        return {}
+
+    pos = 9  # skip count(2) + market(1) + code(6)
+    fmt = "<fHHIIffffffffffffffffffffffffffffff"
+
+    (
+        liutongguben,    # 流通股本 (万股)
+        province,        # 所属省份代码
+        industry,        # 所属行业代码
+        updated_date,    # 财务更新日期 YYYYMMDD
+        ipo_date,        # 上市日期 YYYYMMDD
+        zongguben,       # 总股本 (万股)
+        guojiagu,        # 国家股 (万股)
+        faqirenfarengu,  # 发起人法人股 (万股)
+        farengu,         # 法人股 (万股)
+        bgu,             # B股 (万股)
+        hgu,             # H股 (万股)
+        zhigonggu,       # 职工股 (万股)
+        zongzichan,      # 总资产 (万元)
+        liudongzichan,   # 流动资产 (万元)
+        gudingzichan,    # 固定资产 (万元)
+        wuxingzichan,    # 无形资产 (万元)
+        gudongrenshu,    # 股东人数 (人，不乘万)
+        liudongfuzhai,   # 流动负债 (万元)
+        changqifuzhai,   # 长期负债 (万元)
+        zibengongjijin,  # 资本公积金 (万元)
+        jingzichan,      # 净资产 (万元)
+        zhuyingshouru,   # 主营收入 (万元)
+        zhuyinglirun,    # 主营利润 (万元)
+        yingshouzhangkuan,  # 应收账款 (万元)
+        yingyelirun,     # 营业利润 (万元)
+        touzishouyu,     # 投资收益 (万元)
+        jingyingxianjinliu,  # 经营现金流 (万元)
+        zongxianjinliu,  # 总现金流 (万元)
+        cunhuo,          # 存货 (万元)
+        lirunzonghe,     # 利润总额 (万元)
+        shuihoulirun,    # 税后利润 (万元)
+        jinglirun,       # 净利润 (万元)
+        weifenlirun,     # 未分配利润 (万元)
+        meigujingzichan, # 每股净资产 (元/股)
+        baoliu2,         # 保留字段
+    ) = struct.unpack_from(fmt, body, pos)
+
+    return {
+        "float_shares": liutongguben * 10000,
+        "province": province,
+        "industry": industry,
+        "updated_date": updated_date,
+        "ipo_date": ipo_date,
+        "total_shares": zongguben * 10000,
+        "state_shares": guojiagu * 10000,
+        "founder_shares": faqirenfarengu * 10000,
+        "corp_shares": farengu * 10000,
+        "b_shares": bgu * 10000,
+        "h_shares": hgu * 10000,
+        "employee_shares": zhigonggu * 10000,
+        "total_assets": zongzichan * 10000,
+        "current_assets": liudongzichan * 10000,
+        "fixed_assets": gudingzichan * 10000,
+        "intangible_assets": wuxingzichan * 10000,
+        "shareholder_count": gudongrenshu,
+        "current_liabilities": liudongfuzhai * 10000,
+        "long_term_liabilities": changqifuzhai * 10000,
+        "capital_reserve": zibengongjijin * 10000,
+        "net_assets": jingzichan * 10000,
+        "main_revenue": zhuyingshouru * 10000,
+        "main_profit": zhuyinglirun * 10000,
+        "receivables": yingshouzhangkuan * 10000,
+        "operating_profit": yingyelirun * 10000,
+        "investment_income": touzishouyu * 10000,
+        "operating_cash_flow": jingyingxianjinliu * 10000,
+        "total_cash_flow": zongxianjinliu * 10000,
+        "inventory": cunhuo * 10000,
+        "total_profit": lirunzonghe * 10000,
+        "after_tax_profit": shuihoulirun * 10000,
+        "net_profit": jinglirun * 10000,
+        "retained_earnings": weifenlirun * 10000,
+        "bvps": meigujingzichan,
+        "_reserved": baoliu2,
+    }
 
 
 def parse_ticks(body: bytes, market: int, code: str) -> list[Tick]:
@@ -536,18 +599,77 @@ def parse_ticks(body: bytes, market: int, code: str) -> list[Tick]:
 
 
 def parse_company_info_category(body: bytes) -> list[dict]:
-    """解析公司信息目录"""
+    """解析公司信息目录
+
+    旧协议 (pytdx 0x109b): count(2B) + N×[name(64B)+filename(80B)+start(4B)+length(4B)]
+    新协议 (0x1878): outer_count(2B) + N×[market(1B)+code(6B)+cat_count(2B) + cat_count×29B]
+      每条 29B 记录: market(1)+code(6)+sep(1)+date_uint32(4)+type(1)+f1(4)+f2(4)+f3(4)+f4(4)
+    """
+    if len(body) < 4:
+        return []
+
+    pos = 0
+    (outer_count,) = struct.unpack_from("<H", body, pos)
+    pos += 2
+
+    # 判断是否为新协议: 检查是否紧跟 market(0或1) + ASCII 数字代码
+    # 新协议 outer_count 通常为 1，且 body[2] 为 0x00 或 0x01
+    is_new_format = outer_count <= 10 and len(body) >= 11 and body[pos] in (0, 1)
+    if is_new_format:
+        # 尝试验证: 检查 code 为 6 位 ASCII 数字
+        try:
+            body[pos + 1 : pos + 7].decode("ascii")
+            is_new_format = True
+        except Exception:
+            is_new_format = False
+
+    if is_new_format:
+        results = []
+        for _ in range(outer_count):
+            if pos + 9 > len(body):
+                break
+            market = body[pos]; pos += 1
+            code = body[pos : pos + 6].decode("ascii", errors="replace"); pos += 6
+            (cat_count,) = struct.unpack_from("<H", body, pos); pos += 2
+            rec_size = 29  # market(1)+code(6)+sep(1)+date(4)+type(1)+4×float(16)
+            for i in range(cat_count):
+                if pos + rec_size > len(body):
+                    break
+                rec = body[pos : pos + rec_size]; pos += rec_size
+                r_market = rec[0]
+                r_code = rec[1:7].decode("ascii", errors="replace")
+                (r_date,) = struct.unpack_from("<I", rec, 8)
+                r_type = rec[12]
+                f1, f2, f3, f4 = struct.unpack_from("<ffff", rec, 13)
+                results.append({
+                    "market": r_market,
+                    "code": r_code,
+                    "date": r_date,
+                    "type": r_type,
+                    "values": [f1, f2, f3, f4],
+                })
+        return results
+
+    # 旧协议: count(2B) + N×[name(64B)+filename(80B)+start(4B)+length(4B)]
+    results = []
     pos = 0
     (count,) = struct.unpack_from("<H", body, pos)
     pos += 2
 
-    results = []
+    def _decode_gbk(b: bytes) -> str:
+        null = b.find(b"\x00")
+        if null != -1:
+            b = b[:null]
+        return b.decode("gbk", errors="ignore")
+
     for _ in range(count):
-        filename = body[pos : pos + 50].decode("gbk").rstrip("\x00")
-        pos += 50
-        (filesize,) = struct.unpack_from("<I", body, pos)
-        pos += 4
-        results.append({"filename": filename, "filesize": filesize})
+        if pos + 152 > len(body):
+            break
+        name = _decode_gbk(body[pos : pos + 64]); pos += 64
+        filename = _decode_gbk(body[pos : pos + 80]); pos += 80
+        (start,) = struct.unpack_from("<I", body, pos); pos += 4
+        (length,) = struct.unpack_from("<I", body, pos); pos += 4
+        results.append({"name": name, "filename": filename, "start": start, "length": length})
     return results
 
 

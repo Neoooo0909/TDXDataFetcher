@@ -255,7 +255,7 @@ class TdxClient:
     # === 行情数据 ===
 
     @staticmethod
-    def _parse_market(market: str | int) -> int:
+    def _parse_market(market) -> int:
         """解析市场代码"""
         if isinstance(market, int):
             return market
